@@ -1,0 +1,69 @@
+#!/bin/bash
+# This is a driver-driver for the gfortran compiler which allows
+# the use of multiple -arch flags, dispatching each architecture
+# to one driver call and then combining the binaries with lipo.
+# It is experimental and many open source tools don't work well
+# in that scenario (since the linking flags differ by architecture)
+# so your mileage may vary.
+# (C)2024 Simon Urbanek <simon.urbanek@R-project.org>
+# License: both MIT and GPL-3
+
+i=0
+DARGS=("$@")
+FINARGS=()
+ARCHS=()
+PROG=gfortran
+TOF=/tmp/outfiles.$$
+
+while [ $i -lt ${#DARGS[@]} ]; do
+    if [ ${DARGS[$i]} == -arch ]; then
+	i=$((i + 1))
+	ARCHS+=(${DARGS[$i]})
+    else
+	FINARGS+=(${DARGS[$i]})
+    fi
+    i=$((i + 1))
+done
+
+if [ -z $ARCHS ]; then
+    ARCHS+=arm64
+fi
+
+if [ ${#ARCHS[@]} == 1 ]; then
+    dst=$ARCHS
+    if [ $dst == arm64 ]; then
+	dst=aarch64
+    fi
+    exec opt/gfortran/bin/${dst}-apple-darwin20.0.0-$PROG ${FINARGS[@]}
+fi
+
+LIPOS=()
+LOUT=()
+for arch in ${ARCHS[@]}; do
+    echo $arch
+    dst=$arch
+    if [ $dst == arm64 ]; then
+	dst=aarch64
+    fi
+    rm -f $TOF
+    _GCC_WRITE_OUTFILES=$TOF opt/gfortran/bin/${dst}-apple-darwin20.0.0-$PROG -arch $arch ${FINARGS[@]}
+    i=0
+    for fn in `cat $TOF`; do
+	echo "Look for $fn"
+	if [ -e $fn ]; then
+	    cp $fn "${fn}-$arch"
+	    if [ -z ${LOUT[$i]} ]; then
+		LOUT[$i]=$fn
+	    fi
+	    LIPOS[$i]="${LIPOS[$i]} -arch $arch ${fn}-$arch"
+	    i=$((i + 1))
+	fi
+    done
+done
+i=0
+while [ $i -lt ${#LOUT[@]} ]; do
+    echo lipo -create ${LIPOS[$i][@]} -output ${LOUT[$i]}
+    lipo -create ${LIPOS[$i][@]} -output ${LOUT[$i]}
+    i=$((i + 1))
+done
+rm -f $TOF
